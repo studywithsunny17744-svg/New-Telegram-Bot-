@@ -1,0 +1,827 @@
+import logging
+import json
+import datetime
+from telegram import Update, constants, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
+from telegram.request import HTTPXRequest
+import httpx
+import database
+
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# Configuration
+BOT_TOKEN = "8365030445:AAEaam02RXe5IxyID2HplhmRGBKp6Tg4tyE"
+BOT_OWNER = "@maniuf76"
+BOT_TITLE = "MANI 272"
+ADMIN_IDS = [8190259025]
+
+# --- Ad Reward System Configuration ---
+AD_LINK = "https://gplinks.co/dwEidy"
+
+# --- UI Theme Constants ---
+H = "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰"
+L = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+FOOTER = f"\n{L}\n⚡ *Powered by* {BOT_OWNER}\n{H}"
+COIN = "🪙"
+
+NO_COIN_MSG = (
+    f"\n{H}\n🔻 *NO COINS FOUND*\n{L}\n\n"
+    f"💰 Balance: `0` {COIN}\n"
+    f"👉 Use `/earn` to get free coins!\n"
+    f"{FOOTER}"
+)
+
+# API Base URLs & Keys
+BASE_URL_COSMO = "http://api.subhxcosmo.in/api"
+KEY_COSMO = "MANI"
+BASE_URL_MOUKTIK = "http://api.subhxcosmo.in/api"
+KEY_MOUKTIK = "MANI272"
+BASE_URL_VISITS = "http://sspam.thug4ff.com/visits"
+BASE_URL_BOMBER = "https://bomber-api-subh.onrender.com/bomb"
+LIKE_API_URL = "https://like.mani272.com/like"
+
+# --- Helper ---
+async def fetch_api_data(url):
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(url)
+        return response
+    except Exception as e:
+        logging.error(f"API Request Error: {e}")
+        return None
+
+def box(title, icon, body):
+    """Unified compact message builder"""
+    return f"\n{H}\n{icon} *{title}*\n{L}\n\n{body}\n{FOOTER}"
+
+def err_box(title, body):
+    return box(title, "🔻", body)
+
+def ok_box(title, body):
+    return box(title, "🔰", body)
+
+def load_box(title, body):
+    return box(title, "⏳", body)
+
+# --- Permission Checks & Tracking ---
+
+async def track_user(update: Update):
+    if not update.effective_user:
+        return True
+    user = update.effective_user
+    await database.add_or_update_user(user.id, user.username, user.first_name, user.last_name)
+    if await database.is_banned(user.id):
+        if update.message:
+            await update.message.reply_text(
+                err_box("ACCESS DENIED", "🚫 Your account is *suspended*.\nContact admin for appeal."),
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+        return False
+    if user.id not in ADMIN_IDS:
+        can_use, used, limit = await database.check_daily_limit(user.id)
+        if not can_use:
+            if update.message:
+                await update.message.reply_text(
+                    err_box("DAILY LIMIT REACHED", f"📊 Usage: `{used}/{limit}`\n🔄 Resets in *24 hours*"),
+                    parse_mode=constants.ParseMode.MARKDOWN
+                )
+            return False
+    return True
+
+def admin_only(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id not in ADMIN_IDS:
+            await update.message.reply_text(
+                err_box("ADMIN ONLY", "🔒 This command requires *admin* access."),
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+            return
+        return await func(update, context)
+    return wrapper
+
+async def check_coins(update, user_id):
+    """Returns True if user has coins or is admin"""
+    if user_id in ADMIN_IDS:
+        return True
+    coins = await database.get_coins(user_id)
+    if coins < 1:
+        await update.message.reply_text(NO_COIN_MSG, parse_mode=constants.ParseMode.MARKDOWN)
+        return False
+    return True
+
+async def use_coin(user_id):
+    """Deduct 1 coin if not admin"""
+    if user_id not in ADMIN_IDS:
+        await database.deduct_coin(user_id, 1)
+
+# --- COIN EARN SYSTEM ---
+
+async def earn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    await database.set_earn_timestamp(update.effective_user.id)
+    await update.message.reply_text(
+        ok_box("EARN FREE COINS",
+            f"1️⃣ Click the ad link below\n"
+            f"2️⃣ Wait *20 seconds*\n"
+            f"3️⃣ Come back & type `/claim`\n\n"
+            f"🔗 [CLICK HERE TO EARN]({AD_LINK})\n"
+            f"🎁 Reward: `1` {COIN}"
+        ),
+        parse_mode=constants.ParseMode.MARKDOWN, disable_web_page_preview=True
+    )
+
+async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    user_id = update.effective_user.id
+    last_earn = await database.get_last_earn_time(user_id)
+    if not last_earn:
+        await update.message.reply_text(
+            err_box("NO ACTIVE TASK", "Use `/earn` first to generate an ad link."),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+    elapsed = (datetime.datetime.now() - datetime.datetime.fromisoformat(last_earn)).total_seconds()
+    if elapsed < 20:
+        await update.message.reply_text(
+            err_box("TOO FAST", f"Wait at least 20 seconds!\n⏳ Remaining: `{int(20 - elapsed)}s`"),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+    await database.add_coin(user_id, 1)
+    await database.clear_earn_timestamp(user_id)
+    new_bal = await database.get_coins(user_id)
+    await update.message.reply_text(
+        ok_box("COIN CLAIMED!", f"✅ Received `1` {COIN}\n💰 Balance: `{new_bal}` {COIN}"),
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+
+# --- Command Handlers ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    await database.log_activity(update.effective_user.id, "start")
+    name = update.effective_user.first_name
+    coins = await database.get_coins(update.effective_user.id)
+    
+    msg = (
+        f"{H}\n"
+        f"      🎮 *{BOT_TITLE}* 🎮\n"
+        f"    ⚔️ *MULTI-TOOL BOT* ⚔️\n"
+        f"{H}\n\n"
+        f"Hey *{name}*! 🕹️\n"
+        f"💰 Balance: `{coins}` {COIN}\n\n"
+        f"▬▬ 🛠️ *ARSENAL* 🛠️ ▬▬\n\n"
+        f"📱 `mobile` ➜ _Number lookup_ ({COIN})\n"
+        f"👪 `/family` ➜ _Family lookup_\n"
+        f"📧 `/email` ➜ _Email OSINT_\n"
+        f"🚗 `/vehicle` ➜ _Vehicle lookup_\n"
+        f"💳 `/pan` ➜ _PAN lookup_\n"
+        f"🔫 `/ffinfo` ➜ _FF player info_ ({COIN})\n"
+        f"🎯 `/visits` ➜ _Profile visits_ ({COIN})\n"
+        f"❤️ `/like` ➜ _Send like_ ({COIN})\n"
+        f"💣 `/bomb` ➜ _SMS bomber_ ({COIN})\n\n"
+        f"▬▬ 💰 *ECONOMY* 💰 ▬▬\n\n"
+        f"🔗 `/earn` ➜ _Earn free coins_\n"
+        f"🎁 `/claim` ➜ _Claim coins_\n\n"
+        f"{L}\n"
+        f"💡 Use `/help` for details\n"
+        f"{FOOTER}"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🔗 Support", url="https://t.me/maniuf76")],
+        [InlineKeyboardButton("📖 Help", callback_data="help_btn")]
+    ]
+    if update.effective_user.id in ADMIN_IDS:
+        keyboard.append([InlineKeyboardButton("⚙️ Admin", callback_data="admin_panel")])
+    await update.message.reply_text(msg, parse_mode=constants.ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+HELP_TEXT = (
+    f"📖 *COMMAND MANUAL*\n{L}\n\n"
+    f"🔹 *OSINT TOOLS*\n"
+    f"  📱 Send 10-digit number ({COIN})\n"
+    f"  👪 `/family <id>`\n"
+    f"  📧 `/email <email>`\n"
+    f"  🚗 `/vehicle <plate>`\n"
+    f"  💳 `/pan <pan>`\n\n"
+    f"🔹 *GAMING TOOLS*\n"
+    f"  🔫 `/ffinfo <uid>` ({COIN})\n"
+    f"  🎯 `/visits <uid> <region>` ({COIN})\n"
+    f"  ❤️ `/like <uid> <region>` ({COIN})\n"
+    f"  💣 `/bomb <number>` ({COIN})\n\n"
+    f"🔹 *REGIONS:* `AG ME EU US AS ID IN`\n"
+    f"💡 _Like has 24h cooldown_"
+)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    await database.log_activity(update.effective_user.id, "help")
+    await update.message.reply_text(f"\n{H}\n{HELP_TEXT}\n{FOOTER}", parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- LIKE COMMAND ---
+async def like_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    user_id = update.effective_user.id
+    if not await check_coins(update, user_id): return
+    
+    if user_id not in ADMIN_IDS:
+        can_like, last_like_time = await database.can_user_like(user_id)
+        if not can_like:
+            time_left = await database.get_cooldown_time(user_id)
+            await update.message.reply_text(
+                err_box("COOLDOWN ACTIVE", f"⏰ Remaining: `{time_left}`\n🕒 Last Like: `{last_like_time}`\n💡 _1 like per 24 hours_"),
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+            return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            err_box("INVALID SYNTAX", "📝 `/like <uid> <region>`\n📌 Example: `/like 123456 AG`\n🌍 Regions: `AG ME EU US AS ID IN`"),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+    
+    await use_coin(user_id)
+    uid, region = context.args[0], context.args[1]
+    
+    if not uid.isdigit():
+        await update.message.reply_text(err_box("INVALID UID", "UID must be numeric."), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    
+    valid_regions = ["AG", "ME", "EU", "US", "AS", "ID", "IN"]
+    if region.upper() not in valid_regions:
+        await update.message.reply_text(
+            err_box("INVALID REGION", f"Use: `{'` `'.join(valid_regions)}`"),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+    
+    msg = await update.message.reply_text(
+        load_box("SENDING LIKE...", f"🎯 UID: `{uid}`\n🌍 Region: `{region}`"),
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+    
+    url = f"{LIKE_API_URL}?uid={uid}&region={region}"
+    response = await fetch_api_data(url)
+    
+    if response and response.status_code == 200:
+        try:
+            data = response.json()
+            success = await database.record_user_like(user_id, uid, region)
+            if success:
+                await database.log_activity(user_id, "like", f"{uid} {region}")
+                p = data.get("player", {})
+                lk = data.get("likes", {})
+                result = ok_box("LIKE DELIVERED!",
+                    f"👤 Name: `{p.get('nickname', 'N/A')}`\n"
+                    f"🆔 UID: `{p.get('uid', 'N/A')}`\n"
+                    f"🌍 Region: `{p.get('region', 'N/A')}`\n\n"
+                    f"❤️ Before: `{lk.get('before', 0)}`\n"
+                    f"❤️ After: `{lk.get('after', 0)}`\n"
+                    f"➕ Added: `+{lk.get('added_by_api', 0)}`\n\n"
+                    f"⏰ _Next like in 24 hours_"
+                )
+            else:
+                result = err_box("DATABASE ERROR", "Could not record like.")
+        except Exception as e:
+            logging.error(f"Like API parsing error: {e}")
+            result = err_box("PARSE ERROR", f"`{response.text[:200]}`")
+    else:
+        error_msg = "Connection failed"
+        if response:
+            error_msg = f"Status {response.status_code}"
+            try:
+                error_msg = response.json().get("message", error_msg)
+            except: pass
+        result = err_box("LIKE FAILED", error_msg)
+    
+    await msg.edit_text(result, parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- Generic OSINT Handler ---
+async def handle_osint_command(update, context, base_url, api_key, search_type, param_name, emoji="🔍", title="Search"):
+    if not await track_user(update): return
+    await database.log_activity(update.effective_user.id, search_type)
+    
+    if not context.args:
+        await update.message.reply_text(
+            err_box("INVALID SYNTAX", f"📝 `/{search_type} <{param_name}>`"),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+
+    term = " ".join(context.args)
+    progress_msg = await update.message.reply_text(
+        load_box("SCANNING...", f"{emoji} {title}\n🎯 Target: `{term}`"),
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+    await update.message.chat.send_action(constants.ChatAction.TYPING)
+
+    final_param = param_name if api_key == "NONE" else "term"
+    url = f"{base_url}?{final_param}={term}"
+    if api_key != "NONE":
+        url += f"&key={api_key}"
+    if search_type != "NONE":
+        url += f"&type={search_type}"
+    
+    response = await fetch_api_data(url)
+    result_text = format_response(response, term, title)
+    await progress_msg.edit_text(result_text, parse_mode=constants.ParseMode.MARKDOWN)
+
+def format_response(response, term, title):
+    if not response:
+        return err_box("CONNECTION FAILED", "Server did not respond. Try again.")
+    
+    try:
+        json_data = response.json()
+    except:
+        json_data = None
+
+    if response.status_code not in [200, 201, 202]:
+        err = ""
+        if json_data and (json_data.get("message") or json_data.get("error")):
+            err = json_data.get('message') or json_data.get('error')
+        else:
+            err = f"HTTP {response.status_code}"
+        return err_box("API ERROR", f"⚠️ {err}")
+    
+    try:
+        if isinstance(json_data, dict):
+            if json_data.get("status") == "error" or json_data.get("error") is True:
+                return err_box("LOOKUP FAILED", f"⚠️ {json_data.get('message', 'Unknown error')}")
+
+            # Remove unwanted fields
+            for key in ["owner", "success", "cached", "proxyUsed", "attempt",
+                        "developer", "developerinfo", "Developerinfo", "developerInfo", "DeveloperInfo"]:
+                json_data.pop(key, None)
+            
+            results = json_data.get("result", {}).get("results", []) if isinstance(json_data.get("result"), dict) else json_data.get("result", [])
+            
+            if results and isinstance(results, list):
+                body = f"🎯 Query: `{term}`\n\n"
+                for idx, record in enumerate(results[:5], 1):
+                    body += f"╔═ 📄 *Record {idx}* ═╗\n"
+                    for k, v in record.items():
+                        if v:
+                            body += f"┃ ▸ *{k.replace('_',' ').title()}:* `{v}`\n"
+                    body += f"╚{'═'*18}╝\n\n"
+                return ok_box(title.upper(), body)
+            
+            body = ""
+            for k, v in json_data.items():
+                if v and "developer" not in k.lower():
+                    body += f"▸ *{k.replace('_',' ').title()}:* `{v}`\n"
+            return ok_box(title.upper(), body)
+            
+        return ok_box(title.upper(), f"`{response.text[:800]}`")
+    except Exception as e:
+        logging.error(f"Formatting error: {e}")
+        return ok_box(title.upper(), f"`{response.text[:800]}`")
+
+# --- OSINT Wrappers ---
+async def family_command(update, context):
+    await handle_osint_command(update, context, BASE_URL_COSMO, KEY_COSMO, "id_family", "id", "👪", "Family Lookup")
+
+async def email_command(update, context):
+    await handle_osint_command(update, context, BASE_URL_MOUKTIK, KEY_MOUKTIK, "email", "email", "📧", "Email Lookup")
+
+async def vehicle_command(update, context):
+    await handle_osint_command(update, context, BASE_URL_COSMO, KEY_COSMO, "vehicle", "plate_number", "🚗", "Vehicle Lookup")
+
+async def pan_command(update, context):
+    await handle_osint_command(update, context, BASE_URL_MOUKTIK, KEY_MOUKTIK, "pan", "pan_number", "💳", "PAN Lookup")
+
+# --- FFINFO COMMAND (Screenshot Style Output) ---
+async def ffinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    user_id = update.effective_user.id
+    if not await check_coins(update, user_id): return
+    
+    if not context.args:
+        await update.message.reply_text(
+            err_box("INVALID SYNTAX", "📝 `/ffinfo <uid>`\n📌 Example: `/ffinfo 1234567890`"),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+
+    await use_coin(user_id)
+    uid = context.args[0]
+    await database.log_activity(user_id, "ffinfo", uid)
+    
+    msg = await update.message.reply_text(
+        load_box("SCANNING PLAYER...", f"🔫 Free Fire INFO\n🎯 UID: `{uid}`"),
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+    
+    url = f"https://free-fire-info-five.vercel.app/info?uid={uid}"
+    response = await fetch_api_data(url)
+    
+    if not response or response.status_code != 200:
+        await msg.edit_text(err_box("API ERROR", "Server did not respond."), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    
+    try:
+        data = response.json()
+    except:
+        await msg.edit_text(err_box("PARSE ERROR", "Invalid response from server."), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    
+    if data.get("status") == "error" or data.get("error"):
+        await msg.edit_text(err_box("LOOKUP FAILED", f"⚠️ {data.get('message', 'Player not found')}"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+
+    # --- Extract data safely ---
+    def g(d, *keys, default="N/A"):
+        """Get nested value"""
+        for k in keys:
+            if isinstance(d, dict):
+                d = d.get(k, default)
+            else:
+                return default
+        return d if d not in [None, "", 0] else default
+
+    # Try multiple possible structures
+    info = data.get("result", data.get("data", data))
+    basic = info.get("basicInfo", info.get("AccountInfo", info))
+    rank = info.get("rankInfo", info.get("socialinfo", {}))
+    pet = info.get("petInfo", info.get("PetInformation", {}))
+    social = info.get("socialInfo", info.get("ClanInfo", {}))
+    guild = info.get("guildInfo", info.get("GuildInfo", {}))
+
+    nickname = g(basic, "nickname") or g(basic, "AccountName") or g(info, "nickname", default="N/A")
+    player_id = g(basic, "accountId") or g(basic, "UID") or uid
+    region = g(basic, "region") or g(info, "region", default="N/A")
+    level = g(basic, "level") or g(basic, "AccountLevel", default="N/A")
+    exp = g(basic, "exp") or g(basic, "AccountEXP", default="N/A")
+    likes = g(basic, "likes") or g(info, "likes", default="0")
+    br_rank = g(basic, "brRankPoint") or g(rank, "BRRank", default="N/A")
+    cs_rank = g(basic, "csRankPoint") or g(rank, "CSRank", default="N/A")
+    acc_type = g(basic, "accountType") or g(basic, "AccountType", default="N/A")
+    created = g(basic, "createAt") or g(basic, "AccountCreateTime", default="N/A")
+    last_login = g(basic, "lastLogin") or g(basic, "AccountLastLogin", default="N/A")
+    signature = g(social, "signature") or g(info, "signature", default="N/A")
+    pet_name = g(pet, "name") or g(pet, "PetName", default="N/A")
+    pet_level = g(pet, "level") or g(pet, "PetLevel", default="N/A")
+    guild_name = g(guild, "guildName") or g(guild, "GuildName", default="N/A")
+
+    # --- Build Screenshot-Style Output ---
+    result = (
+        f"\n{H}\n"
+        f"🎮 *Free Fire Player Profile*\n"
+        f"{L}\n\n"
+        f"🔵 Nickname: `{nickname}`\n"
+        f"🆔 Player ID: `{player_id}`\n"
+        f"🌍 Region: `{region}`\n"
+        f"📋 Account Type: `{acc_type}`\n"
+        f"🍼 Level: `{level}`\n"
+        f"✨ EXP: `{exp}`\n"
+        f"❤️ Likes: `{likes}`\n"
+        f"📅 Created: `{created}`\n"
+        f"🔑 Last Login: `{last_login}`\n\n"
+        f"🏆 *Rank Information*\n"
+        f"{L}\n\n"
+        f"🎯 BR Rank Points: `{br_rank}`\n"
+        f"⚔️ CS Rank Points: `{cs_rank}`\n\n"
+        f"🐾 *Pet Information*\n"
+        f"{L}\n\n"
+        f"🐶 Pet Name: `{pet_name}`\n"
+        f"📊 Pet Level: `{pet_level}`\n\n"
+        f"✍️ *Social Information*\n"
+        f"{L}\n\n"
+        f"💬 Signature: `{signature}`\n"
+        f"🏰 Guild: `{guild_name}`\n"
+        f"{FOOTER}"
+    )
+    
+    await msg.edit_text(result, parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- Mobile Lookup ---
+async def mobile_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mobile = update.message.text.strip()
+    if not mobile.isdigit() or len(mobile) != 10: return
+    if not await track_user(update): return
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        if await database.is_protected(mobile):
+            await update.message.reply_text(
+                err_box("PROTECTED NUMBER", "🛡️ This number is shielded by admin."),
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+            return
+        if not await check_coins(update, user_id): return
+        await use_coin(user_id)
+
+    await database.log_activity(user_id, "mobile")
+    progress_msg = await update.message.reply_text(
+        load_box("SCANNING NUMBER...", f"📱 Target: `{mobile}`"),
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+    url = f"{BASE_URL_COSMO}?key={KEY_COSMO}&type=mobile&term={mobile}"
+    response = await fetch_api_data(url)
+    result_text = format_response(response, mobile, "Mobile Lookup")
+    await progress_msg.edit_text(result_text, parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- Visits Command ---
+async def visits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    user_id = update.effective_user.id
+    if not await check_coins(update, user_id): return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            err_box("INVALID SYNTAX", "📝 `/visits <uid> <region>`\n📌 Example: `/visits 123456 IN`"),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+
+    await use_coin(user_id)
+    uid, region = context.args[0], context.args[1]
+    await database.log_activity(user_id, "visits", f"{uid} {region}")
+    
+    msg = await update.message.reply_text(
+        load_box("FETCHING VISITS...", f"🎯 UID: `{uid}`\n🌍 Region: `{region}`"),
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+    url = f"{BASE_URL_VISITS}?uid={uid}&region={region}"
+    resp = await fetch_api_data(url)
+    result_text = format_response(resp, f"{uid} {region}", "Visits")
+    await msg.edit_text(result_text, parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- Bomber Command ---
+async def bomber_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await track_user(update): return
+    user_id = update.effective_user.id
+    if not await check_coins(update, user_id): return
+    
+    if not context.args:
+        await update.message.reply_text(
+            err_box("INVALID SYNTAX", "📝 `/bomb <number>`\n📌 Example: `/bomb 9876543210`"),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+        return
+
+    number = context.args[0]
+    if user_id not in ADMIN_IDS:
+        if await database.is_protected(number):
+            await update.message.reply_text(
+                err_box("PROTECTED NUMBER", "🛡️ This number is shielded by admin."),
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+            return
+    
+    await use_coin(user_id)
+    await database.log_activity(user_id, "bomb", number)
+    
+    msg = await update.message.reply_text(
+        load_box("BOMBING...", f"📱 Target: `{number}`\n📊 Amount: `15`"),
+        parse_mode=constants.ParseMode.MARKDOWN
+    )
+    url = f"{BASE_URL_BOMBER}?phone={number}&amount=15"
+    resp = await fetch_api_data(url)
+    result_text = format_response(resp, number, "SMS Bomber")
+    await msg.edit_text(result_text, parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- Admin Commands ---
+
+@admin_only
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stats = await database.get_stats()
+    body = (
+        f"👥 Total Users: `{stats['total_users']}`\n"
+        f"✨ New Today: `{stats['new_users_today']}`\n"
+        f"🔥 Active Today: `{stats['active_today']}`\n\n"
+        f"🏆 *TOP COMMANDS*\n"
+    )
+    for cmd, count in stats['top_commands']:
+        body += f"  ▸ `{cmd}` — {count}\n"
+    body += f"\n❤️ *LIKE STATS*\n"
+    for vtype, count in stats['bot_stats']:
+        body += f"  ▸ `{vtype}` — {count}\n"
+    await update.message.reply_text(ok_box("DASHBOARD", body), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(err_box("USAGE", "`/banuser <user_id>`"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    uid = int(context.args[0])
+    await database.ban_user(uid)
+    await update.message.reply_text(ok_box("USER BANNED", f"🆔 `{uid}` suspended."), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def unban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(err_box("USAGE", "`/unbanuser <user_id>`"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    uid = int(context.args[0])
+    await database.unban_user(uid)
+    await update.message.reply_text(ok_box("USER UNBANNED", f"🆔 `{uid}` restored."), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(err_box("USAGE", "`/broadcast <message>`"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    msg_text = " ".join(context.args)
+    users = await database.get_all_users()
+    broadcast_msg = ok_box("ANNOUNCEMENT", msg_text)
+    count = 0
+    for uid in users:
+        try:
+            await context.bot.send_message(uid, broadcast_msg, parse_mode=constants.ParseMode.MARKDOWN)
+            count += 1
+        except: pass
+    await update.message.reply_text(ok_box("BROADCAST SENT", f"📨 Delivered to `{count}` users."), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def user_info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(err_box("USAGE", "`/userinfo <user_id>`"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    uid = int(context.args[0])
+    user = await database.get_user_info(uid)
+    if not user:
+        await update.message.reply_text(err_box("NOT FOUND", "User not in database."), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    status = "🔴 BANNED" if user['is_banned'] else "🟢 ACTIVE"
+    body = (
+        f"🆔 ID: `{user['user_id']}`\n"
+        f"👤 @{user['username']}\n"
+        f"📛 {user['first_name']} {user['last_name'] or ''}\n"
+        f"📅 Joined: `{user['join_date']}`\n"
+        f"🔥 Active: `{user['last_active']}`\n"
+        f"📊 Commands: `{user['commands_count']}`\n"
+        f"💰 Coins: `{user.get('coins', 0)}` {COIN}\n"
+        f"❤️ Likes: `{user.get('likes_count', 0)}`\n"
+        f"📌 Status: {status}"
+    )
+    await update.message.reply_text(ok_box("PLAYER DOSSIER", body), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def set_limit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(err_box("USAGE", "`/setlimit <user_id> <limit>`"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    uid = int(context.args[0])
+    limit = int(context.args[1])
+    await database.set_user_limit(uid, limit)
+    await update.message.reply_text(ok_box("LIMIT UPDATED", f"🆔 User: `{uid}`\n📊 Limit: `{limit}`/day"), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def reset_likes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await database.reset_likes_cooldown()
+    await update.message.reply_text(ok_box("COOLDOWNS RESET", "All like cooldowns cleared."), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def protect_number_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(err_box("USAGE", "`/protect <number>`"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    number = context.args[0]
+    await database.protect_number(number, update.effective_user.id)
+    await update.message.reply_text(ok_box("NUMBER PROTECTED", f"🛡️ `{number}` is now shielded."), parse_mode=constants.ParseMode.MARKDOWN)
+
+@admin_only
+async def unprotect_number_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(err_box("USAGE", "`/unprotect <number>`"), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+    number = context.args[0]
+    await database.unprotect_number(number)
+    await update.message.reply_text(ok_box("SHIELD REMOVED", f"`{number}` is no longer protected."), parse_mode=constants.ParseMode.MARKDOWN)
+
+# --- Callback Handler ---
+async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "help_btn":
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]]
+        await query.edit_message_text(f"\n{H}\n{HELP_TEXT}\n{FOOTER}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+
+    if query.data == "back_to_start":
+        name = query.from_user.first_name
+        coins = await database.get_coins(query.from_user.id)
+        msg = (
+            f"{H}\n"
+            f"      🎮 *{BOT_TITLE}* 🎮\n"
+            f"    ⚔️ *MULTI-TOOL BOT* ⚔️\n"
+            f"{H}\n\n"
+            f"Hey *{name}*! 🕹️\n"
+            f"💰 Balance: `{coins}` {COIN}\n\n"
+            f"▬▬ 🛠️ *ARSENAL* 🛠️ ▬▬\n\n"
+            f"📱 `mobile` ➜ _Number lookup_ ({COIN})\n"
+            f"👪 `/family` ➜ _Family lookup_\n"
+            f"📧 `/email` ➜ _Email OSINT_\n"
+            f"🚗 `/vehicle` ➜ _Vehicle lookup_\n"
+            f"💳 `/pan` ➜ _PAN lookup_\n"
+            f"🔫 `/ffinfo` ➜ _FF player info_ ({COIN})\n"
+            f"🎯 `/visits` ➜ _Profile visits_ ({COIN})\n"
+            f"❤️ `/like` ➜ _Send like_ ({COIN})\n"
+            f"💣 `/bomb` ➜ _SMS bomber_ ({COIN})\n\n"
+            f"▬▬ 💰 *ECONOMY* 💰 ▬▬\n\n"
+            f"🔗 `/earn` ➜ _Earn free coins_\n"
+            f"🎁 `/claim` ➜ _Claim coins_\n\n"
+            f"{L}\n"
+            f"💡 Use `/help` for details\n"
+            f"{FOOTER}"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🔗 Support", url="https://t.me/maniuf76")],
+            [InlineKeyboardButton("📖 Help", callback_data="help_btn")]
+        ]
+        if query.from_user.id in ADMIN_IDS:
+            keyboard.append([InlineKeyboardButton("⚙️ Admin", callback_data="admin_panel")])
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+
+    if query.from_user.id not in ADMIN_IDS:
+        await query.edit_message_text(err_box("UNAUTHORIZED", "🔒 Admin access required."), parse_mode=constants.ParseMode.MARKDOWN)
+        return
+
+    if query.data == "admin_panel":
+        keyboard = [
+            [InlineKeyboardButton("📊 Dashboard", callback_data="stats_btn"), InlineKeyboardButton("📣 Broadcast", callback_data="broadcast_btn")],
+            [InlineKeyboardButton("❤️ Reset Likes", callback_data="reset_likes_btn")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_start"), InlineKeyboardButton("✖️ Close", callback_data="close_admin")]
+        ]
+        await query.edit_message_text(
+            ok_box("ADMIN PANEL", "Select an option below:"),
+            reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=constants.ParseMode.MARKDOWN
+        )
+
+    elif query.data == "stats_btn":
+        stats = await database.get_stats()
+        body = (
+            f"👥 Total Users: `{stats['total_users']}`\n"
+            f"✨ New Today: `{stats['new_users_today']}`\n"
+            f"🔥 Active Today: `{stats['active_today']}`\n\n"
+            f"🏆 *TOP COMMANDS*\n"
+        )
+        for cmd, count in stats['top_commands']:
+            body += f"  ▸ `{cmd}` — {count}\n"
+        body += f"\n❤️ *LIKE STATS*\n"
+        for vtype, count in stats['bot_stats']:
+            body += f"  ▸ `{vtype}` — {count}\n"
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]
+        await query.edit_message_text(ok_box("DASHBOARD", body), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=constants.ParseMode.MARKDOWN)
+
+    elif query.data == "broadcast_btn":
+        await query.edit_message_text(
+            ok_box("BROADCAST MODE", "`/broadcast <your message>`"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+    
+    elif query.data == "reset_likes_btn":
+        await database.reset_likes_cooldown()
+        await query.edit_message_text(
+            ok_box("COOLDOWNS RESET", "All like cooldowns cleared."),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]),
+            parse_mode=constants.ParseMode.MARKDOWN
+        )
+    
+    elif query.data == "close_admin":
+        await query.delete_message()
+
+async def post_init(application):
+    await database.init_db()
+    print("Database initialized.")
+
+def main():
+    print(f"Starting {BOT_TITLE}...")
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("earn", earn_command))
+    app.add_handler(CommandHandler("claim", claim_command))
+    app.add_handler(CommandHandler("family", family_command))
+    app.add_handler(CommandHandler("email", email_command))
+    app.add_handler(CommandHandler("vehicle", vehicle_command))
+    app.add_handler(CommandHandler("pan", pan_command))
+    app.add_handler(CommandHandler("ffinfo", ffinfo_command))
+    app.add_handler(CommandHandler("visits", visits_command))
+    app.add_handler(CommandHandler("bomb", bomber_command))
+    app.add_handler(CommandHandler("like", like_command))
+    app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CommandHandler("banuser", ban_user_cmd))
+    app.add_handler(CommandHandler("unbanuser", unban_user_cmd))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("userinfo", user_info_cmd))
+    app.add_handler(CommandHandler("resetlikes", reset_likes_cmd))
+    app.add_handler(CommandHandler("setlimit", set_limit_cmd))
+    app.add_handler(CommandHandler("protect", protect_number_cmd))
+    app.add_handler(CommandHandler("unprotect", unprotect_number_cmd))
+    app.add_handler(CallbackQueryHandler(admin_callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mobile_lookup))
+    
+    print("Polling...")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
