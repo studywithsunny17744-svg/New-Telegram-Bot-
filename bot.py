@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 
 # Configuration
-BOT_TOKEN = "8365030445:AAGdgA4VUxjLc1vvSk305PS4CIxfBWpfIQQ"
+BOT_TOKEN = "8365030445:AAHIxmsjadhJsGo1MGCHujfg4V0JEw8L334"
 BOT_OWNER = "@Mani272yt"
 BOT_TITLE = "MANI 272"
 ADMIN_IDS = [8190259025]  # REPLACE THIS with the ID from @userinfobot
@@ -51,8 +51,8 @@ NO_COIN_MSG = (
 )
 
 # ExploitsIndia OSINT APIs (plain-text responses)
-NUMBER_API_ENDPOINT = "https://exploitsindia.site/api/number.php?exploits={term}"
-AADHAAR_API_ENDPOINT = "https://exploitsindia.site/api/aadhar.php?exploits={term}"
+NUMBER_API_ENDPOINT = "https://api.subhxcosmo.in/api?key=MANI&type=mobile&term={term}"
+AADHAAR_API_ENDPOINT = "https://api.subhxcosmo.in/api?key=MANI&type=id_family&term={term}"
 FAMILY_API_ENDPOINT = "https://exploitsindia.site/api/family.php?exploits={term}"
 PINCODE_API_ENDPOINT = "https://exploitsindia.site/api/pincode.php?exploits={term}"
 IFSC_API_ENDPOINT = "https://exploitsindia.site/api/ifsc.php?exploits={term}"
@@ -147,6 +147,214 @@ async def fetch_api_data(url):
 
 def build_exploits_url(endpoint_template: str, term: str) -> str:
     return endpoint_template.format(term=quote(str(term).strip()))
+
+def format_number_lookup_response(response, mobile: str) -> str:
+    """Custom formatter for the subhxcosmo number lookup API — matches screenshot style."""
+    if not response:
+        return (
+            f"{HEADER}{ERROR_ICON} *CONNECTION FAILED*\n{SUB_LINE}\n\n"
+            f"Server did not respond. Try again later.\n{FOOTER}"
+        )
+    if response.status_code not in (200, 201, 202):
+        return (
+            f"{HEADER}{ERROR_ICON} *API ERROR*\n{SUB_LINE}\n\n"
+            f"HTTP Status: `{response.status_code}`\n{FOOTER}"
+        )
+
+    # Try JSON first
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+
+    if data and isinstance(data, dict):
+        # Handle error responses
+        if not data.get("success"):
+            return (
+                f"{HEADER}{ERROR_ICON} *NO DATA FOUND*\n{SUB_LINE}\n\n"
+                f"🎯 Query: `{mobile}`\n\nNo records found for this search.\n{FOOTER}"
+            )
+
+        # Extract results array from nested structure: data["result"]["results"]
+        result_obj = data.get("result", {})
+        results = []
+        if isinstance(result_obj, dict):
+            results = result_obj.get("results", [])
+        elif isinstance(result_obj, list):
+            results = result_obj
+
+        if not results:
+            return (
+                f"{HEADER}{ERROR_ICON} *NO DATA FOUND*\n{SUB_LINE}\n\n"
+                f"🎯 Query: `{mobile}`\n\nNo records found.\n{FOOTER}"
+            )
+
+        # Take first result record
+        rec = results[0] if results else {}
+
+        name = rec.get("NAME") or rec.get("name") or "N/A"
+        father = rec.get("fname") or rec.get("father_name") or "N/A"
+        addr_raw = rec.get("ADDRESS") or rec.get("address") or "N/A"
+        # Clean address: replace ! with comma
+        address = addr_raw.replace("!", ", ").replace(",  ", ", ").strip(", ")
+        circle = rec.get("circle") or rec.get("Circle") or "N/A"
+        mob = rec.get("MOBILE") or rec.get("mobile") or mobile
+        aadhaar = rec.get("aadhaar") or rec.get("id") or ""
+        email = rec.get("email") or ""
+        alt = rec.get("alt") or ""
+
+        result = (
+            f"{HEADER}"
+            f"📱 *MOBILE LOOKUP*\n"
+            f"{SUB_LINE}\n\n"
+            f"🎯 *Query:* `{mobile}`\n\n"
+            f"🔍 *NUMBER LOOKUP RESULT*\n"
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+            f"Lookup Result for: `{mobile}`\n"
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+            f"👤 Name: {name}\n"
+            f"👨 Father Name: {father}\n"
+            f"📱 Mobile: `{mob}`\n"
+            f"🏠 Address: {address}\n"
+            f"📡 Circle: {circle}\n"
+        )
+        if aadhaar:
+            result += f"🪪 Aadhaar: `{aadhaar}`\n"
+        if email:
+            result += f"📧 Email: {email}\n"
+        if alt:
+            result += f"📞 Alt Number: `{alt}`\n"
+
+        result += (
+            f"\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            f"{FOOTER}"
+        )
+        return result
+
+    # Fallback: plain text response
+    body = clean_exploits_api_text(response.text)
+    if not body:
+        return (
+            f"{HEADER}{ERROR_ICON} *NO DATA*\n{SUB_LINE}\n\n"
+            f"No response from server for `{mobile}`.\n{FOOTER}"
+        )
+
+    # Plain text — display as-is in the formatted box
+    return (
+        f"{HEADER}"
+        f"📱 *MOBILE LOOKUP*\n"
+        f"{SUB_LINE}\n\n"
+        f"🎯 *Query:* `{mobile}`\n\n"
+        f"🔍 *NUMBER LOOKUP RESULT*\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+        f"{body}\n\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        f"{FOOTER}"
+    )
+
+def format_aadhaar_lookup_response(response, term: str) -> str:
+    """Custom formatter for the subhxcosmo Aadhaar/family API."""
+    if not response:
+        return (
+            f"{HEADER}{ERROR_ICON} *CONNECTION FAILED*\n{SUB_LINE}\n\n"
+            f"Server did not respond. Try again later.\n{FOOTER}"
+        )
+    if response.status_code not in (200, 201, 202):
+        return (
+            f"{HEADER}{ERROR_ICON} *API ERROR*\n{SUB_LINE}\n\n"
+            f"HTTP Status: `{response.status_code}`\n{FOOTER}"
+        )
+
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+
+    if data and isinstance(data, dict):
+        if not data.get("success"):
+            return (
+                f"{HEADER}{ERROR_ICON} *NO DATA FOUND*\n{SUB_LINE}\n\n"
+                f"🎯 Query: `{term}`\n\nNo records found for this Aadhaar.\n{FOOTER}"
+            )
+
+        result_obj = data.get("result", {})
+        results = []
+        if isinstance(result_obj, dict):
+            results = result_obj.get("results", [])
+        elif isinstance(result_obj, list):
+            results = result_obj
+
+        if not results:
+            return (
+                f"{HEADER}{ERROR_ICON} *NO DATA FOUND*\n{SUB_LINE}\n\n"
+                f"🎯 Query: `{term}`\n\nNo records found.\n{FOOTER}"
+            )
+
+        rec = results[0] if results else {}
+
+        # Ration card details
+        ration = rec.get("ration_card_details", {})
+        state = ration.get("state_name", "N/A")
+        district = ration.get("district_name", "N/A")
+        ration_no = ration.get("ration_card_no", "N/A")
+        scheme = ration.get("scheme_name", "N/A")
+
+        # Members
+        members = rec.get("members", [])
+
+        # Additional info
+        add_info = rec.get("additional_info", {})
+        fps_cat = add_info.get("fps_category", "N/A")
+
+        result = (
+            f"{HEADER}"
+            f"🪪 *AADHAAR LOOKUP*\n"
+            f"{SUB_LINE}\n\n"
+            f"🎯 *Query:* `{term}`\n\n"
+            f"🔍 *AADHAAR LOOKUP RESULT*\n"
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+            f"📋 *RATION CARD DETAILS*\n"
+            f"  ┣ State: {state}\n"
+            f"  ┣ District: {district}\n"
+            f"  ┣ Ration Card No: `{ration_no}`\n"
+            f"  ┣ Scheme: {scheme}\n"
+            f"  ┗ FPS Category: {fps_cat}\n\n"
+        )
+
+        if members:
+            result += f"👪 *FAMILY MEMBERS* ({len(members)})\n"
+            for m in members:
+                sno = m.get("s_no", "")
+                name = m.get("member_name", "N/A")
+                mid = m.get("member_id", "")
+                result += f"  {sno}. {name}"
+                if mid:
+                    result += f" (ID: `{mid}`)"
+                result += "\n"
+            result += "\n"
+
+        result += (
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            f"{FOOTER}"
+        )
+        return result
+
+    # Fallback: plain text
+    body = clean_exploits_api_text(response.text)
+    if not body:
+        return (
+            f"{HEADER}{ERROR_ICON} *NO DATA*\n{SUB_LINE}\n\n"
+            f"No response from server for `{term}`.\n{FOOTER}"
+        )
+    return (
+        f"{HEADER}"
+        f"🪪 *AADHAAR LOOKUP*\n"
+        f"{SUB_LINE}\n\n"
+        f"🎯 *Query:* `{term}`\n\n"
+        f"{body}\n\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        f"{FOOTER}"
+    )
 
 def clean_exploits_api_text(text: str) -> str:
     if not text:
@@ -711,7 +919,10 @@ def format_response(response, term, title):
 
 # --- OSINT Wrappers ---
 async def aadhaar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Single Aadhaar holder details — aadhar.php API."""
+    """Aadhaar family lookup via subhxcosmo API."""
+    if not await track_user(update):
+        return
+
     if not context.args:
         await update.message.reply_text(
             f"{HEADER}{ERROR_ICON} *USAGE*\n{SUB_LINE}\n\n"
@@ -728,7 +939,36 @@ async def aadhaar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=constants.ParseMode.MARKDOWN,
         )
         return
-    await handle_exploits_lookup(update, context, "aadhaar", "aadhaar", "aadhaar_number")
+
+    user_id = update.effective_user.id
+    await database.log_activity(user_id, "aadhaar", term)
+
+    loading = (
+        f"{HEADER}"
+        f"{LOADING_ICON} *SCANNING...*\n"
+        f"{SUB_LINE}\n\n"
+        f"🪪 Aadhaar Lookup\nTarget: `{term}`\n\n_Fetching data..._\n"
+        f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰"
+    )
+    progress_msg = await update.message.reply_text(loading, parse_mode=constants.ParseMode.MARKDOWN)
+    await update.message.chat.send_action(constants.ChatAction.TYPING)
+
+    url = build_exploits_url(AADHAAR_API_ENDPOINT, term)
+    response = await fetch_api_data(url)
+    result_text = format_aadhaar_lookup_response(response, term)
+
+    try:
+        if len(result_text) <= 4096:
+            await progress_msg.edit_text(result_text, parse_mode=constants.ParseMode.MARKDOWN)
+        else:
+            await progress_msg.delete()
+            await send_reply(update, context, result_text)
+    except Exception as e:
+        logging.error(f"Failed to send aadhaar result: {e}")
+        try:
+            await progress_msg.edit_text(result_text)
+        except Exception:
+            await send_reply(update, context, result_text)
 
 async def family_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Family members list — family.php API (separate from /aadhaar)."""
@@ -953,7 +1193,7 @@ async def run_mobile_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     url = build_exploits_url(NUMBER_API_ENDPOINT, mobile)
     response = await fetch_api_data(url)
-    result_text = format_exploits_response(response, mobile, "Mobile Lookup")
+    result_text = format_number_lookup_response(response, mobile)
 
     try:
         if len(result_text) <= 4096:
@@ -962,7 +1202,11 @@ async def run_mobile_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await progress_msg.delete()
             await send_reply(update, context, result_text)
     except Exception as e:
-        logging.error(f"Failed to send mobile result: {e}")
+        logging.error(f"Failed to send mobile result (edit): {e}")
+        try:
+            await progress_msg.edit_text(result_text)
+        except Exception:
+            pass
         try:
             await send_reply(update, context, result_text)
         except Exception as e2:

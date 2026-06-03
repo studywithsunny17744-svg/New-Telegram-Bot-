@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verify Your Account | Mini App</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <div class="content">
+            <div class="verify-card">
+                <div class="shield-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L4 5V11C4 16.19 7.41 20.74 12 22C16.59 20.74 20 16.19 20 11V5L12 2Z"
+                            stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M9 12L11 14L15 10" stroke="#00ff88" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                    </svg>
+                </div>
+
+                <h1 class="title">Verify Your Account</h1>
+
+                <div class="status-container">
+                    <p id="status-text" class="status-loading">Verifying...</p>
+                    <div class="progress-wrapper">
+                        <div id="progress-bar" class="progress-bar"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer class="footer">
+            <p>@AtmmCash_bot</p>
+        </footer>
+    </div>
+
+    <script>
+        window.addEventListener('load', () => {
+            const progressBar = document.getElementById('progress-bar');
+            const statusText = document.getElementById('status-text');
+
+            let width = 0;
+            const interval = setInterval(() => {
+                if (width >= 100) {
+                    clearInterval(interval);
+                    statusText.innerText = 'Verified Successfully!';
+                    statusText.classList.remove('status-loading');
+                    statusText.classList.add('status-success');
+                    progressBar.style.width = '100%';
+                    progressBar.classList.add('finished');
+                } else {
+                    width += Math.random() * 2;
+                    if (width > 100) width = 100;
+                    progressBar.style.width = width + '%';
+                }
+            }, 30);
+        });
+    </script>
+</body>
+
+</html>
